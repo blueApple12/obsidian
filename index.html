@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <title>System</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -12,6 +14,7 @@
             font-family: sans-serif; 
         }
 
+        /* Results Container */
         #results-container {
             position: absolute; inset: 0;
             display: flex; flex-direction: column;
@@ -49,6 +52,7 @@
             margin-top: 4px;
         }
 
+        /* Loading indicator */
         #loading-indicator {
             position: absolute;
             bottom: 40px;
@@ -77,8 +81,10 @@
 </head>
 <body class="bg-black">
 
+    <!-- Invisible Interaction Layer -->
     <div id="gesture-area" class="absolute inset-0 z-50"></div>
 
+    <!-- Results List -->
     <div id="results-container">
         <div id="list-content" class="w-full flex flex-col items-center"></div>
         <div class="mt-10 text-gray-800 text-[10px] uppercase tracking-widest">System Ready</div>
@@ -96,8 +102,8 @@
     <script>
         // --- CONFIGURATION ---
         const CONFIG_FILTER_RARE = true;
-        const PACE_PER_LETTER = 750;
-        const BASE_TAP_TIME = 250;
+        const PACE_PER_LETTER = 750; // ms per letter distance
+        const BASE_TAP_TIME = 250;   // base ms even for distance 0
         const MAX_CATEGORIES = 10;
         const MIN_NAME_LENGTH = 2;
 
@@ -115,7 +121,7 @@
         };
 
         let currentNamesDB = [];
-        let processedDB = [];
+        let processedDB = []; // { name, pct, d1, d2, d3 }
 
         function processDB(db) {
             return db
@@ -123,9 +129,6 @@
                 .map(item => {
                     const n = item.name;
                     // FRASER MAPPING:
-                    // d1: First to Last
-                    // d2: First to Second
-                    // d3: Second to Third
                     const d1 = getDist(n[0], n[n.length - 1]);
                     const d2 = n.length >= 2 ? getDist(n[0], n[1]) : 0;
                     const d3 = n.length >= 3 ? getDist(n[1], n[2]) : 0;
@@ -138,14 +141,24 @@
             if (!candidates.length) return [{ name: "אין תוצאות" }];
 
             return candidates.map(item => {
+                let total_error = 0;
+                
+                // --- SMART CALCULATION BASED ON LENGTH ---
+                // d1: First to Last (Measured always if length >= 2)
                 const expected_t1 = BASE_TAP_TIME + (item.d1 * PACE_PER_LETTER);
-                const expected_t2 = BASE_TAP_TIME + (item.d2 * PACE_PER_LETTER);
-                const expected_t3 = BASE_TAP_TIME + (item.d3 * PACE_PER_LETTER);
+                total_error += Math.abs(t1 - expected_t1);
 
-                const total_error = Math.abs(t1 - expected_t1)
-                                  + Math.abs(t2 - expected_t2)
-                                  + Math.abs(t3 - expected_t3);
+                if (length >= 3) {
+                    const expected_t2 = BASE_TAP_TIME + (item.d2 * PACE_PER_LETTER);
+                    total_error += Math.abs(t2 - expected_t2);
+                }
+                
+                if (length >= 4) {
+                    const expected_t3 = BASE_TAP_TIME + (item.d3 * PACE_PER_LETTER);
+                    total_error += Math.abs(t3 - expected_t3);
+                }
 
+                // Popularity bonus
                 let prob_bonus = 0;
                 if (item.pct > 2.0) prob_bonus = 100;
                 else if (item.pct > 1.0) prob_bonus = 50;
@@ -157,14 +170,14 @@
         // --- App State ---
         let catCount = 0, lenCount = 0;
         let t = [0, 0, 0], startTime = 0;
-        let state = 0;
+        let state = 0; // 0: Config, 1-6: Timers, 7: Results
         let dbLoading = false;
 
-        const tapFlash         = document.getElementById('tap-flash');
-        const gestureArea      = document.getElementById('gesture-area');
-        const resultsContainer = document.getElementById('results-container');
-        const listContent      = document.getElementById('list-content');
-        const loadingIndicator = document.getElementById('loading-indicator');
+        const tapFlash          = document.getElementById('tap-flash');
+        const gestureArea       = document.getElementById('gesture-area');
+        const resultsContainer  = document.getElementById('results-container');
+        const listContent       = document.getElementById('list-content');
+        const loadingIndicator  = document.getElementById('loading-indicator');
 
         function resetApp() {
             catCount = 0; lenCount = 0;
@@ -186,14 +199,32 @@
         function updateDots() {
             for (let i = 0; i < 3; i++) {
                 const dot = document.getElementById('dot' + i);
+                dot.style.display = (i === 0 || (i === 1 && lenCount >= 3) || (i === 2 && lenCount >= 4)) ? 'block' : 'none';
                 dot.className = 'dot';
-                if (state === (i + 1) * 2)    dot.className = 'dot active';
-                else if (state > (i + 1) * 2) dot.className = 'dot done';
+                if (state === (i + 1) * 2)      dot.className = 'dot active';
+                else if (state > (i + 1) * 2)   dot.className = 'dot done';
             }
         }
 
         function searchGoogle(name) {
-            window.open(`https://www.google.com/search?q=${encodeURIComponent(name)}`, '_blank');
+            const url = `https://www.google.com/search?q=${encodeURIComponent(name)}`;
+            const w = window.open(url, '_blank');
+            if (!w) window.location.href = url;
+        }
+
+        function showResults() {
+            state = 7;
+            vibrate([200, 100, 200]);
+            const res = runEngine(lenCount, t[0], t[1], t[2]);
+            listContent.innerHTML = '';
+            res.forEach(r => {
+                const div = document.createElement('div');
+                div.className = 'result-item';
+                div.innerHTML = `${r.name}<span>לחץ לחיפוש בגוגל</span>`;
+                div.addEventListener('click', () => searchGoogle(r.name));
+                listContent.appendChild(div);
+            });
+            resultsContainer.classList.add('show');
         }
 
         function handleTap() {
@@ -211,26 +242,30 @@
             flashScreen();
 
             switch (state) {
-                case 1: startTime = now; state = 2; vibrate(30); break;
-                case 2: t[0] = now - startTime; state = 3; vibrate(40); break;
-                case 3: startTime = now; state = 4; vibrate(30); break;
-                case 4: t[1] = now - startTime; state = 5; vibrate(40); break;
-                case 5: startTime = now; state = 6; vibrate(30); break;
+                case 1: startTime = now; state = 2; vibrate(30); break;  // T1 Start
+                case 2: 
+                    t[0] = now - startTime; 
+                    if (lenCount === 2) {
+                        showResults();
+                    } else {
+                        state = 3; vibrate(40); 
+                    }
+                    break; 
+
+                case 3: startTime = now; state = 4; vibrate(30); break;  // T2 Start
+                case 4: 
+                    t[1] = now - startTime; 
+                    if (lenCount === 3) {
+                        showResults();
+                    } else {
+                        state = 5; vibrate(40); 
+                    }
+                    break;
+
+                case 5: startTime = now; state = 6; vibrate(30); break;  // T3 Start
                 case 6:
                     t[2] = now - startTime;
-                    state = 7;
-                    vibrate([200, 100, 200]);
-
-                    const res = runEngine(lenCount, t[0], t[1], t[2]);
-                    listContent.innerHTML = '';
-                    res.forEach(r => {
-                        const div = document.createElement('div');
-                        div.className = 'result-item';
-                        div.innerHTML = `${r.name}<span>לחץ לחיפוש בגוגל</span>`;
-                        div.addEventListener('click', () => searchGoogle(r.name));
-                        listContent.appendChild(div);
-                    });
-                    resultsContainer.classList.add('show');
+                    showResults();
                     break;
             }
             updateDots();
@@ -294,6 +329,7 @@
                         }
                     } else {
                         lenCount++;
+                        updateDots(); // Update dots to reflect length
                         vibrate([30, 30]);
                     }
                 }
