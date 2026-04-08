@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body, html { 
+            margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; 
+            touch-action: none; user-select: none; -webkit-user-select: none;
+            font-family: sans-serif; 
+        }
+
+        #results-container {
+            position: absolute; inset: 0;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            background: #000;
+            z-index: 100;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.5s ease;
+        }
+        #results-container.show {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .result-item {
+            padding: 15px 30px;
+            margin: 8px 0;
+            font-size: 24px;
+            font-weight: 300;
+            color: #fff;
+            border: 1px solid #333;
+            border-radius: 12px;
+            width: 80%;
+            max-width: 300px;
+            text-align: center;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .result-item:active { background: #222; }
+        .result-item span {
+            font-size: 10px;
+            color: #666;
+            display: block;
+            margin-top: 4px;
+        }
+
+        #loading-indicator {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #333;
+            font-size: 10px;
+            letter-spacing: 2px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        #loading-indicator.show { opacity: 1; }
+
+        .dot-indicator {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 8px; opacity: 0.1;
+        }
+        .dot { width: 3px; height: 3px; border-radius: 50%; background: white; }
+        .dot.active { background: #fff; transform: scale(1.5); opacity: 1; }
+        .dot.done { background: #fff; opacity: 1; }
+
+        #tap-flash {
+            position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 200;
+        }
+    </style>
+</head>
+<body class="bg-black">
+
+    <div id="gesture-area" class="absolute inset-0 z-50"></div>
+
+    <div id="results-container">
+        <div id="list-content" class="w-full flex flex-col items-center"></div>
+        <div class="mt-10 text-gray-800 text-[10px] uppercase tracking-widest">System Ready</div>
+    </div>
+
+    <div id="tap-flash"></div>
+    <div id="loading-indicator">LOADING</div>
+
+    <div class="dot-indicator">
+        <div id="dot0" class="dot"></div>
+        <div id="dot1" class="dot"></div>
+        <div id="dot2" class="dot"></div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const CONFIG_FILTER_RARE = true;
+        const PACE_PER_LETTER = 750;
+        const BASE_TAP_TIME = 250;
+        const MAX_CATEGORIES = 10;
+        const MIN_NAME_LENGTH = 2;
+
+        // --- VIBRATION ---
+        const vibrate = (pattern) => { if ("vibrate" in navigator) navigator.vibrate(pattern); };
+
+        // --- ALPHABET ENGINE ---
+        const ALPHABET = "אבגדהוזחטיכלמנסעפצקרשת";
+        const FINALS_MAP = {'ך':'כ','ם':'מ','ן':'נ','ף':'פ','ץ':'צ'};
+        const cleanChar = (c) => FINALS_MAP[c] || c;
+        const getIndex = (c) => ALPHABET.indexOf(cleanChar(c));
+        const getDist = (c1, c2) => {
+            const i1 = getIndex(c1), i2 = getIndex(c2);
+            return (i1 === -1 || i2 === -1) ? 0 : Math.abs(i1 - i2);
+        };
+
+        let currentNamesDB = [];
+        let processedDB = [];
+
+        function processDB(db) {
+            return db
+                .filter(item => !CONFIG_FILTER_RARE || item.pct >= 0.002)
+                .map(item => {
+                    const n = item.name;
+                    // FRASER MAPPING:
+                    // d1: First to Last
+                    // d2: First to Second
+                    // d3: Second to Third
+                    const d1 = getDist(n[0], n[n.length - 1]);
+                    const d2 = n.length >= 2 ? getDist(n[0], n[1]) : 0;
+                    const d3 = n.length >= 3 ? getDist(n[1], n[2]) : 0;
+                    return { name: n, pct: item.pct, d1, d2, d3 };
+                });
+        }
+
+        function runEngine(length, t1, t2, t3) {
+            let candidates = processedDB.filter(item => item.name.length === length);
+            if (!candidates.length) return [{ name: "אין תוצאות" }];
+
+            return candidates.map(item => {
+                const expected_t1 = BASE_TAP_TIME + (item.d1 * PACE_PER_LETTER);
+                const expected_t2 = BASE_TAP_TIME + (item.d2 * PACE_PER_LETTER);
+                const expected_t3 = BASE_TAP_TIME + (item.d3 * PACE_PER_LETTER);
+
+                const total_error = Math.abs(t1 - expected_t1)
+                                  + Math.abs(t2 - expected_t2)
+                                  + Math.abs(t3 - expected_t3);
+
+                let prob_bonus = 0;
+                if (item.pct > 2.0) prob_bonus = 100;
+                else if (item.pct > 1.0) prob_bonus = 50;
+
+                return { name: item.name, error: total_error - prob_bonus };
+            }).sort((a, b) => a.error - b.error).slice(0, 5);
+        }
+
+        // --- App State ---
+        let catCount = 0, lenCount = 0;
+        let t = [0, 0, 0], startTime = 0;
+        let state = 0;
+        let dbLoading = false;
+
+        const tapFlash         = document.getElementById('tap-flash');
+        const gestureArea      = document.getElementById('gesture-area');
+        const resultsContainer = document.getElementById('results-container');
+        const listContent      = document.getElementById('list-content');
+        const loadingIndicator = document.getElementById('loading-indicator');
+
+        function resetApp() {
+            catCount = 0; lenCount = 0;
+            t = [0, 0, 0]; state = 0;
+            currentNamesDB = []; processedDB = [];
+            dbLoading = false;
+            resultsContainer.classList.remove('show');
+            loadingIndicator.classList.remove('show');
+            updateDots();
+            vibrate([100, 50, 100]);
+            flashScreen(0.2);
+        }
+
+        function flashScreen(op = 0.05) {
+            tapFlash.style.opacity = op;
+            setTimeout(() => tapFlash.style.opacity = '0', 80);
+        }
+
+        function updateDots() {
+            for (let i = 0; i < 3; i++) {
+                const dot = document.getElementById('dot' + i);
+                dot.className = 'dot';
+                if (state === (i + 1) * 2)    dot.className = 'dot active';
+                else if (state > (i + 1) * 2) dot.className = 'dot done';
+            }
+        }
+
+        function searchGoogle(name) {
+            window.open(`https://www.google.com/search?q=${encodeURIComponent(name)}`, '_blank');
+        }
+
+        function handleTap() {
+            if (state === 7) return;
+
+            if (state === 0) {
+                if (catCount === 0 || dbLoading || lenCount < MIN_NAME_LENGTH) return;
+                state = 1;
+                vibrate(40);
+                updateDots();
+                return;
+            }
+
+            const now = Date.now();
+            flashScreen();
+
+            switch (state) {
+                case 1: startTime = now; state = 2; vibrate(30); break;
+                case 2: t[0] = now - startTime; state = 3; vibrate(40); break;
+                case 3: startTime = now; state = 4; vibrate(30); break;
+                case 4: t[1] = now - startTime; state = 5; vibrate(40); break;
+                case 5: startTime = now; state = 6; vibrate(30); break;
+                case 6:
+                    t[2] = now - startTime;
+                    state = 7;
+                    vibrate([200, 100, 200]);
+
+                    const res = runEngine(lenCount, t[0], t[1], t[2]);
+                    listContent.innerHTML = '';
+                    res.forEach(r => {
+                        const div = document.createElement('div');
+                        div.className = 'result-item';
+                        div.innerHTML = `${r.name}<span>לחץ לחיפוש בגוגל</span>`;
+                        div.addEventListener('click', () => searchGoogle(r.name));
+                        listContent.appendChild(div);
+                    });
+                    resultsContainer.classList.add('show');
+                    break;
+            }
+            updateDots();
+        }
+
+        function loadCategory(cat) {
+            if (dbLoading) return;
+            dbLoading = true;
+            loadingIndicator.classList.add('show');
+
+            const s = document.createElement('script');
+            s.src = cat + '.js';
+            s.onload = () => {
+                currentNamesDB = window['DB_' + cat] || [];
+                processedDB = processDB(currentNamesDB);
+                dbLoading = false;
+                loadingIndicator.classList.remove('show');
+                vibrate(40);
+            };
+            s.onerror = () => {
+                dbLoading = false;
+                loadingIndicator.classList.remove('show');
+                catCount--;
+                vibrate([50, 50, 50]);
+            };
+            document.body.appendChild(s);
+        }
+
+        // --- Gesture Handler ---
+        let sy = null, isScrolling = false, longPressTimer = null;
+
+        const onStart = (e) => {
+            const touch = e.touches ? e.touches[0] : e;
+            sy = touch.clientY;
+            isScrolling = false;
+            longPressTimer = setTimeout(resetApp, 1000);
+        };
+
+        const onMove = (e) => {
+            if (sy === null) return;
+            const touch = e.touches ? e.touches[0] : e;
+            if (Math.abs(sy - touch.clientY) > 20) {
+                isScrolling = true;
+                clearTimeout(longPressTimer);
+            }
+            if (e.cancelable) e.preventDefault();
+        };
+
+        const onEnd = (e) => {
+            clearTimeout(longPressTimer);
+            if (sy === null) return;
+            const touch = e.changedTouches ? e.changedTouches[0] : e;
+            const dy = sy - touch.clientY;
+
+            if (Math.abs(dy) > 50 && isScrolling) {
+                if (state === 0) {
+                    if (dy > 0) {
+                        if (catCount < MAX_CATEGORIES && !dbLoading) {
+                            catCount++;
+                            loadCategory(catCount);
+                        }
+                    } else {
+                        lenCount++;
+                        vibrate([30, 30]);
+                    }
+                }
+            } else if (!isScrolling) {
+                handleTap();
+            }
+            sy = null;
+        };
+
+        gestureArea.addEventListener('touchstart', onStart, { passive: false });
+        gestureArea.addEventListener('touchmove',  onMove,  { passive: false });
+        gestureArea.addEventListener('touchend', (e) => {
+            onEnd(e);
+            if (e.cancelable) e.preventDefault();
+        }, { passive: false });
+
+        updateDots();
+    </script>
+</body>
+</html>
