@@ -104,7 +104,7 @@
         const CONFIG_FILTER_RARE = true;
         const PACE_PER_LETTER = 750; // ms per letter distance
         const BASE_TAP_TIME = 250;   // base ms even for distance 0
-        const MAX_CATEGORIES = 2;
+        const MAX_CATEGORIES = 10;
         const MIN_NAME_LENGTH = 2;
 
         // --- VIBRATION ---
@@ -129,6 +129,9 @@
                 .map(item => {
                     const n = item.name;
                     // FRASER MAPPING:
+                    // d1: First to Last
+                    // d2: First to Second
+                    // d3: Second to Third
                     const d1 = getDist(n[0], n[n.length - 1]);
                     const d2 = n.length >= 2 ? getDist(n[0], n[1]) : 0;
                     const d3 = n.length >= 3 ? getDist(n[1], n[2]) : 0;
@@ -142,9 +145,6 @@
 
             return candidates.map(item => {
                 let total_error = 0;
-                
-                // --- SMART CALCULATION BASED ON LENGTH ---
-                // d1: First to Last (Measured always if length >= 2)
                 const expected_t1 = BASE_TAP_TIME + (item.d1 * PACE_PER_LETTER);
                 total_error += Math.abs(t1 - expected_t1);
 
@@ -158,7 +158,6 @@
                     total_error += Math.abs(t3 - expected_t3);
                 }
 
-                // Popularity bonus
                 let prob_bonus = 0;
                 if (item.pct > 2.0) prob_bonus = 100;
                 else if (item.pct > 1.0) prob_bonus = 50;
@@ -172,6 +171,7 @@
         let t = [0, 0, 0], startTime = 0;
         let state = 0; // 0: Config, 1-6: Timers, 7: Results
         let dbLoading = false;
+        let lastTapTime = 0; // For double tap detection
 
         const tapFlash          = document.getElementById('tap-flash');
         const gestureArea       = document.getElementById('gesture-area');
@@ -189,6 +189,21 @@
             updateDots();
             vibrate([100, 50, 100]);
             flashScreen(0.2);
+        }
+
+        function partialReset() {
+            // Restarts the CURRENT process
+            if (state === 0) {
+                // If in configuration, reset counts
+                catCount = 0; lenCount = 0; currentNamesDB = []; processedDB = [];
+                vibrate([40, 40]);
+            } else if (state > 0 && state < 7) {
+                // If in timing, restart stopwatch sequence
+                t = [0, 0, 0]; startTime = 0; state = 1;
+                vibrate([40, 40]);
+            }
+            updateDots();
+            flashScreen(0.1);
         }
 
         function flashScreen(op = 0.05) {
@@ -245,21 +260,15 @@
                 case 1: startTime = now; state = 2; vibrate(30); break;  // T1 Start
                 case 2: 
                     t[0] = now - startTime; 
-                    if (lenCount === 2) {
-                        showResults();
-                    } else {
-                        state = 3; vibrate(40); 
-                    }
+                    if (lenCount === 2) showResults();
+                    else { state = 3; vibrate(40); }
                     break; 
 
                 case 3: startTime = now; state = 4; vibrate(30); break;  // T2 Start
                 case 4: 
                     t[1] = now - startTime; 
-                    if (lenCount === 3) {
-                        showResults();
-                    } else {
-                        state = 5; vibrate(40); 
-                    }
+                    if (lenCount === 3) showResults();
+                    else { state = 5; vibrate(40); }
                     break;
 
                 case 5: startTime = now; state = 6; vibrate(30); break;  // T3 Start
@@ -319,6 +328,7 @@
             if (sy === null) return;
             const touch = e.changedTouches ? e.changedTouches[0] : e;
             const dy = sy - touch.clientY;
+            const now = Date.now();
 
             if (Math.abs(dy) > 50 && isScrolling) {
                 if (state === 0) {
@@ -329,12 +339,19 @@
                         }
                     } else {
                         lenCount++;
-                        updateDots(); // Update dots to reflect length
+                        updateDots();
                         vibrate([30, 30]);
                     }
                 }
             } else if (!isScrolling) {
-                handleTap();
+                // Check for Double Tap (threshold 300ms)
+                if (now - lastTapTime < 300) {
+                    lastTapTime = 0; // Prevent triple-tap reset
+                    partialReset();
+                } else {
+                    lastTapTime = now;
+                    handleTap();
+                }
             }
             sy = null;
         };
