@@ -171,7 +171,6 @@
         let t = [0, 0, 0], startTime = 0;
         let state = 0; // 0: Config, 1-6: Timers, 7: Results
         let dbLoading = false;
-        let lastTapTime = 0; // For double tap detection
 
         const tapFlash          = document.getElementById('tap-flash');
         const gestureArea       = document.getElementById('gesture-area');
@@ -189,21 +188,6 @@
             updateDots();
             vibrate([100, 50, 100]);
             flashScreen(0.2);
-        }
-
-        function partialReset() {
-            // Restarts the CURRENT process
-            if (state === 0) {
-                // If in configuration, reset counts
-                catCount = 0; lenCount = 0; currentNamesDB = []; processedDB = [];
-                vibrate([40, 40]);
-            } else if (state > 0 && state < 7) {
-                // If in timing, restart stopwatch sequence
-                t = [0, 0, 0]; startTime = 0; state = 1;
-                vibrate([40, 40]);
-            }
-            updateDots();
-            flashScreen(0.1);
         }
 
         function flashScreen(op = 0.05) {
@@ -328,7 +312,6 @@
             if (sy === null) return;
             const touch = e.changedTouches ? e.changedTouches[0] : e;
             const dy = sy - touch.clientY;
-            const now = Date.now();
 
             if (Math.abs(dy) > 50 && isScrolling) {
                 if (state === 0) {
@@ -344,14 +327,7 @@
                     }
                 }
             } else if (!isScrolling) {
-                // Check for Double Tap (threshold 300ms)
-                if (now - lastTapTime < 300) {
-                    lastTapTime = 0; // Prevent triple-tap reset
-                    partialReset();
-                } else {
-                    lastTapTime = now;
-                    handleTap();
-                }
+                handleTap();
             }
             sy = null;
         };
